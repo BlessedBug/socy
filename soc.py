@@ -17,12 +17,12 @@ RF_CONFIDENCE_THRESHOLD = 85.0
 SUPERVISED_MODEL = r"/home/ubuntu/socy/supervised_model.pkl"
 UNSUPERVISED_MODEL = r"/home/ubuntu/socy/unsupervised_model.pkl"
 
-GOOGLE_API_KEY = "AIzaSyAPKUXr-WmgqeX8rc8WnU3Z3wOziKST66c"
+GOOGLE_API_KEY = ""
 
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
 SENDER_EMAIL = "roberthazel99@gmail.com"
-SENDER_PASSWORD = "dasy frjs sahr sjyz"
+SENDER_PASSWORD = ""
 ADMIN_EMAIL = "shehriyaraslam2.0@gmail.com"
 
 NUM_COLS = ["cpu_pct", "mem_mb", "child_count", "remote_port", "sent_mb", "recv_mb", "mod_count"]
@@ -203,3 +203,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
