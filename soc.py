@@ -9,13 +9,13 @@ from google import genai
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-WATCH_DIR = r"C:\codes\ITDP\ITDP\files"
-PAYLOAD_OUT_DIR = r"C:\codes\ITDP"
+WATCH_DIR = r"/home/ubuntu/files"
+PAYLOAD_OUT_DIR = r"/home/ubuntu/payloads"
 LOOKBACK_MINUTES = 5
 RF_CONFIDENCE_THRESHOLD = 85.0
 
-SUPERVISED_MODEL = r"C:\codes\ITDP\ITDP\admin\supervised_model.pkl"
-UNSUPERVISED_MODEL = r"C:\codes\ITDP\ITDP\admin\unsupervised_model.pkl"
+SUPERVISED_MODEL = r"/home/ubuntu/socy/supervised_model.pkl"
+UNSUPERVISED_MODEL = r"/home/ubuntu/socy/unsupervised_model.pkl"
 
 GOOGLE_API_KEY = "AIzaSyAPKUXr-WmgqeX8rc8WnU3Z3wOziKST66c"
 
