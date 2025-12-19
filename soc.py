@@ -20,10 +20,10 @@ UNSUPERVISED_MODEL = r"/home/ubuntu/socy/unsupervised_model.pkl"
 GOOGLE_API_KEY = ""
 
 SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 465
-SENDER_EMAIL = "roberthazel99@gmail.com"
+SMTP_PORT = ""
+SENDER_EMAIL = ""
 SENDER_PASSWORD = ""
-ADMIN_EMAIL = "shehriyaraslam2.0@gmail.com"
+ADMIN_EMAIL = ""
 
 NUM_COLS = ["cpu_pct", "mem_mb", "child_count", "remote_port", "sent_mb", "recv_mb", "mod_count"]
 TEXT_COLS = ["cmdline", "path", "proc_name", "source", "event_type", "username", "remote_ip"]
@@ -203,4 +203,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
