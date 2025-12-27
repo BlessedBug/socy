@@ -15,10 +15,14 @@ STATE_DIR = r"/home/ubuntu/state"
 PAYLOAD_DIR = r"/home/ubuntu/payloads"
 PROCESSED_DB = f"{STATE_DIR}/processed.json"
 PROCESSED_ARCHIVE = r"/home/ubuntu/pfiles"
+ML_STATE_DIR = r"/home/ubuntu/state/ml_analyzed"
 
 RF_CONFIDENCE_THRESHOLD = 85.0
 CPU_ABUSE = 90.0
 MEM_ABUSE_MB = 4096
+
+START_HOUR = 8
+END_HOUR = 17
 
 SUPERVISED_MODEL = r"/home/ubuntu/socy/supervised_model.pkl"
 UNSUPERVISED_MODEL = r"/home/ubuntu/socy/unsupervised_model.pkl"
@@ -35,9 +39,13 @@ client = genai.Client(api_key=GOOGLE_API_KEY)
 os.makedirs(STATE_DIR, exist_ok=True)
 os.makedirs(PAYLOAD_DIR, exist_ok=True)
 os.makedirs(PROCESSED_ARCHIVE, exist_ok=True)
+os.makedirs(ML_STATE_DIR, exist_ok=True)
 
 if os.path.exists(PROCESSED_DB):
-    processed = set(json.load(open(PROCESSED_DB)))
+    try:
+        processed = set(json.load(open(PROCESSED_DB)))
+    except:
+        processed = set()
 else:
     processed = set()
 
@@ -58,8 +66,9 @@ def is_file_stable(path, wait_seconds=2):
 
 def list_pending_files():
     files = []
+    if not os.path.exists(WATCH_DIR): return []
     for f in os.listdir(WATCH_DIR):
-        if not f.endswith(".csv"):
+        if not f.endswith(".csv") and not f.endswith(".log"):
             continue
         full = os.path.join(WATCH_DIR, f)
         if f in processed:
@@ -77,7 +86,9 @@ def safe(p, i, default=""):
 
 def to_float(x):
     try:
-        return float(str(x).replace("MB","").replace("%","").replace("Sent:","").replace("Recv:","").replace("file_path:","").strip())
+        cleaned = str(x).lower().replace("sent:","").replace("recv:","").replace("mb","").replace("%","").replace("file_path:","").strip()
+        if ":" in cleaned: cleaned = cleaned.split(":")[-1]
+        return float(cleaned)
     except:
         return 0.0
 
@@ -89,53 +100,55 @@ def parse_line(line):
     r = {c:0.0 for c in NUM_COLS}
     r.update({c:"" for c in TEXT_COLS})
 
-    r["timestamp"] = safe(p,0)
-    r["log_level"] = safe(p,1)
-    r["username"] = safe(p,2)
-    r["source"] = safe(p,3).lower()
-
-    if r["source"] == "usb":
-        r["event_type"] = safe(p,4)
-        r["device"] = safe(p,5)
-        r["path"] = safe(p,6)
+    r["timestamp"] = safe(p, 0)
+    r["log_level"] = safe(p, 1)
+    r["username"] = safe(p, 2)
+    
+    raw_upper = line.upper()
+    
+    if "USB_DEVICE" in raw_upper or "USBSTOR" in raw_upper:
+        r["source"] = "usb"
+        r["event_type"] = safe(p, 4)
+        r["device"] = safe(p, 5)
+        r["path"] = safe(p, 6)
         return r
 
-    if r["source"] == "network":
-        r["proc_name"] = safe(p,4)
-        r["pid"] = safe(p,5)
-        r["connection_state"] = safe(p,6)
-        r["local_ip"] = safe(p,7)
-        r["remote_ip"] = safe(p,8)
-        r["sent_mb"] = to_float(safe(p,9))
-        r["recv_mb"] = to_float(safe(p,10))
-        r["geo_city"] = safe(p,11)
-        r["geo_country"] = safe(p,12)
+    if "NETWORK" in raw_upper or (len(p) > 8 and "." in safe(p, 8)):
+        r["source"] = "network"
+        r["proc_name"] = safe(p, 4)
+        r["pid"] = safe(p, 5)
+        r["remote_ip"] = safe(p, 8)
+        r["sent_mb"] = to_float(safe(p, 9))
+        r["recv_mb"] = to_float(safe(p, 10))
         r["event_type"] = "NET_CONNECT"
         return r
 
-    if r["source"] == "auth":
-        r["event_id"] = safe(p,4)
-        r["event_desc"] = safe(p,5)
-        r["account"] = safe(p,6)
-        r["logon_time"] = safe(p,7)
-        r["event_type"] = "AUTH_EVENT"
+    if "PROCESS" in raw_upper or "SUBPROCESS" in raw_upper:
+        r["source"] = "process"
+        r["proc_name"] = safe(p, 4)
+        r["pid"] = safe(p, 5)
+        r["mem_mb"] = to_float(safe(p, 6))
+        r["cpu_pct"] = to_float(safe(p, 7))
+        r["child_count"] = to_float(safe(p, 8))
+        r["path"] = safe(p, 9)
+        r["event_type"] = safe(p, 10)
         return r
 
-    if r["source"] == "process":
-        r["proc_name"] = safe(p,4)
-        r["pid"] = safe(p,5)
-        r["mem_mb"] = to_float(safe(p,6))
-        r["cpu_pct"] = to_float(safe(p,7))
-        r["child_count"] = to_float(safe(p,8))
-        r["path"] = safe(p,9)
-        r["event_type"] = safe(p,10)
+    if "AUTH" in raw_upper or "LOGON" in raw_upper:
+        r["source"] = "auth"
+        r["event_id"] = safe(p, 4)
+        r["event_type"] = safe(p, 5)
+        r["username"] = safe(p, 6)
+        r["path"] = safe(p, 7)
         return r
 
-    if r["source"] == "access":
-        r["event_type"] = safe(p,4)
-        r["path"] = safe(p,5).replace("file_path:","").strip()
+    if "ACCESS" in raw_upper or "FILE_MODIFIED" in raw_upper:
+        r["source"] = "access"
+        r["event_type"] = safe(p, 4)
+        r["path"] = safe(p, 5).replace("file_path:","").strip()
         return r
 
+    r["source"] = safe(p, 3).lower()
     return r
 
 def load_csv(fp):
@@ -194,13 +207,10 @@ VERDICT: REAL_THREAT or VERDICT: FALSE_POSITIVE
 REASON: Concise technical justification referencing observed EDR signals
 """
     try:
-        r = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=[prompt]
-        )
+        r = client.models.generate_content(model="gemini-2.0-flash", contents=[prompt])
         return r.candidates[0].content.parts[0].text.strip()
-    except:
-        return ""
+    except Exception as e:
+        return f"VERDICT: REAL_THREAT\nREASON: AI analysis failed: {e}"
 
 def send_email(payload):
     msg = MIMEMultipart()
@@ -217,11 +227,8 @@ def move_to_archive(src_path):
     dst = os.path.join(PROCESSED_ARCHIVE, base)
     try:
         shutil.move(src_path, dst)
-    except Exception:
-        try:
-            os.remove(src_path)
-        except:
-            pass
+    except:
+        if os.path.exists(src_path): os.remove(src_path)
 
 def main():
     try:
@@ -232,50 +239,47 @@ def main():
         return
 
     files = list_pending_files()
-    if not files:
-        return
+    if not files: return
 
     for fp in files:
         fname = os.path.basename(fp)
-        try:
-            df = load_csv(fp)
-        except Exception as e:
-            print(f"[ERROR] Failed reading {fname}: {e}")
-            move_to_archive(fp)
-            continue
-
+        df = load_csv(fp)
         if df.empty:
-            processed.add(fname)
-            save_state()
-            move_to_archive(fp)
+            processed.add(fname); save_state(); move_to_archive(fp)
             continue
 
-        for c in NUM_COLS:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
-
-        try:
-            rf_preds = rf.predict(df[NUM_COLS])
-            rf_probs = rf.predict_proba(df[NUM_COLS])
-            iso_preds = iso.predict(df[NUM_COLS])
-        except Exception as e:
-            print(f"[ERROR] Model inference failed on {fname}: {e}")
-            move_to_archive(fp)
-            continue
-
+        used_ml = False
         for i, row in df.iterrows():
             triggers = []
-            if row["source"] == "usb":
-                triggers.append("USB insertion")
-            if row["cpu_pct"] >= CPU_ABUSE or row["mem_mb"] >= MEM_ABUSE_MB:
-                triggers.append("Resource abuse")
+            
             try:
-                conf = max(rf_probs[i]) * 100
-                if rf_preds[i] == 1 and conf > RF_CONFIDENCE_THRESHOLD:
-                    triggers.append(f"RandomForest confidence {round(conf,2)}%")
+                ts_obj = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S")
+                if not (START_HOUR <= ts_obj.hour < END_HOUR):
+                    triggers.append(f"After-hours activity ({ts_obj.hour}:00)")
             except:
                 pass
-            if iso_preds[i] == -1:
-                triggers.append("IsolationForest anomaly")
+            
+            if row["source"] == "usb":
+                triggers.append("USB insertion detected")
+            
+            if row["cpu_pct"] >= CPU_ABUSE or row["mem_mb"] >= MEM_ABUSE_MB:
+                triggers.append("Resource abuse")
+
+            if row["source"] in ["process", "network"]:
+                used_ml = True
+                try:
+                    input_data = df.loc[[i], NUM_COLS]
+                    rf_p = rf.predict(input_data)[0]
+                    rf_conf = max(rf.predict_proba(input_data)[0]) * 100
+                    iso_p = iso.predict(input_data)[0]
+
+                    if rf_p == 1 and rf_conf > RF_CONFIDENCE_THRESHOLD:
+                        triggers.append(f"RandomForest ({round(rf_conf,2)}%)")
+                    if iso_p == -1:
+                        triggers.append("IsolationForest Anomaly")
+                except:
+                    pass
+
             if not triggers:
                 continue
 
@@ -292,25 +296,25 @@ def main():
                 "user": row["username"],
                 "process": row.get("proc_name", ""),
                 "device": row.get("device", ""),
-                "cpu_pct": row["cpu_pct"],
-                "mem_mb": row["mem_mb"],
-                "remote_ip": row.get("remote_ip", ""),
                 "confidence_sources": triggers,
                 "analysis": verdict,
                 "response_plan": {
-                    "kill_process": row.get("proc_name", ""),
-                    "disable_usb": True if row["source"] == "usb" else False,
-                    "block_network": True
+                    "kill_process": row.get("proc_name", ""), 
+                    "block_network": True,
+                    "lock_system": True
                 }
             }
 
-            out = f"{PAYLOAD_DIR}/payload_{int(time.time())}.json"
-            json.dump(payload, open(out, "w"), indent=2)
-
+            out = f"{PAYLOAD_DIR}/payload_{int(time.time())}_{i}.json"
+            with open(out, "w") as f: json.dump(payload, f, indent=2)
             try:
                 send_email(payload)
-            except Exception as e:
-                print(f"[WARN] Email delivery failed: {e}")
+            except:
+                pass
+
+        if used_ml:
+            ml_log_path = os.path.join(ML_STATE_DIR, f"ml_log_{fname}.json")
+            df[NUM_COLS].to_json(ml_log_path)
 
         processed.add(fname)
         save_state()
