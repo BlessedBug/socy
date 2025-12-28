@@ -18,7 +18,6 @@ PROC_DIR = "/home/ubuntu/proc"
 PROCESSED_DB = f"{STATE_DIR}/processed.json"
 PROCESSED_ARCHIVE = "/home/ubuntu/pfiles"
 ML_STATE_DIR = "/home/ubuntu/state/ml_analyzed"
-IP_EMAIL_MAP = f"{STATE_DIR}/ip_to_email.json"
 
 RF_CONFIDENCE_THRESHOLD = 85.0
 START_HOUR = 8
@@ -36,20 +35,6 @@ ADMIN_EMAIL = [
     "shehriyaraslam2.0@gmail.com",
     "ammarcyber.s@gmail.com"
 ]
-
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
-genai.configure(api_key=GOOGLE_API_KEY)
-
-AI_MODELS = [
-    "gemini-1.5-flash",
-    "gemini-1.5-pro"
-]
-
-os.makedirs(STATE_DIR, exist_ok=True)
-os.makedirs(PAYLOAD_DIR, exist_ok=True)
-os.makedirs(PROC_DIR, exist_ok=True)
-os.makedirs(PROCESSED_ARCHIVE, exist_ok=True)
-os.makedirs(ML_STATE_DIR, exist_ok=True)
 
 processed = set()
 if os.path.exists(PROCESSED_DB):
@@ -184,16 +169,16 @@ Return concise justification and response steps.
     try:
         r = genai.chat.generate(
             model="gemini-1.5-flash",
-            messages=[{"author":"user","content":prompt}]
+            messages=[{"author": "user", "content": prompt}]
         )
         return r.last.message.content.strip()
-    except:
+    except Exception as e:
         return "AI unavailable. Escalate to human analyst."
 
-def send_email(payload, recipients):
+def send_email(payload):
     msg = MIMEMultipart()
     msg["From"] = SMTP_EMAIL
-    msg["To"] = ", ".join(recipients)
+    msg["To"] = ", ".join(ADMIN_EMAIL)
     msg["Subject"] = f"SOC ALERT [{payload['severity']}]"
     msg.attach(MIMEText(json.dumps(payload, indent=2), "plain"))
     with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as s:
@@ -205,7 +190,8 @@ def main():
         rf = joblib.load(SUPERVISED_MODEL)
         iso = joblib.load(UNSUPERVISED_MODEL)
     except:
-        return
+        rf = None
+        iso = None
 
     for fp in list_pending_files():
         fname = os.path.basename(fp)
@@ -225,13 +211,6 @@ def main():
         for _, row in df.iterrows():
             row_reasons = []
 
-            try:
-                h = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S").hour
-                if not (START_HOUR <= h < END_HOUR):
-                    row_reasons.append("OFFTIME")
-            except:
-                pass
-
             if row["source"] == "usb":
                 row_reasons.append("USB")
                 threats.append(row.to_dict())
@@ -249,19 +228,28 @@ def main():
                     with open(os.path.join(d, payload_name), "w") as f:
                         json.dump(payload, f, indent=2)
                 try:
-                    send_email(payload, ADMIN_EMAIL)
+                    send_email(payload)
                 except:
                     pass
                 continue
+
+            try:
+                h = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S").hour
+                if not (START_HOUR <= h < END_HOUR):
+                    row_reasons.append("OFFTIME")
+            except:
+                pass
 
             if row["source"] in ["process", "network"]:
                 used_ml = True
                 try:
                     x = pd.DataFrame([row])[NUM_COLS]
-                    if rf.predict(x)[0] == 1 and max(rf.predict_proba(x)[0]) * 100 > RF_CONFIDENCE_THRESHOLD:
-                        row_reasons.append("RF_ANOMALY")
-                    if iso.predict(x)[0] == -1:
-                        row_reasons.append("ISO_ANOMALY")
+                    if rf is not None:
+                        if rf.predict(x)[0] == 1 and max(rf.predict_proba(x)[0]) * 100 > RF_CONFIDENCE_THRESHOLD:
+                            row_reasons.append("RF_ANOMALY")
+                    if iso is not None:
+                        if iso.predict(x)[0] == -1:
+                            row_reasons.append("ISO_ANOMALY")
                 except:
                     pass
 
@@ -295,7 +283,7 @@ def main():
                 json.dump(payload, f, indent=2)
 
         try:
-            send_email(payload, ADMIN_EMAIL)
+            send_email(payload)
         except:
             pass
 
