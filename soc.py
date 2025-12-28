@@ -1,4 +1,4 @@
-import os
+import osimport os
 import json
 import time
 import smtplib
@@ -97,7 +97,64 @@ def to_float(x):
     except:
         return 0.0
 
-# --- Keep parse_line() untouched ---
+def parse_line(line):
+    if not line.strip():
+        return {c:0.0 for c in NUM_COLS} | {c:"" for c in TEXT_COLS}
+
+    p = line.strip().split(",")
+    r = {c:0.0 for c in NUM_COLS}
+    r.update({c:"" for c in TEXT_COLS})
+
+    r["timestamp"] = safe(p, 0)
+    r["log_level"] = safe(p, 1)
+    r["username"] = safe(p, 2)
+    
+    raw_upper = line.upper()
+    
+    if "USB_DEVICE" in raw_upper or "USBSTOR" in raw_upper:
+        r["source"] = "usb"
+        r["event_type"] = safe(p, 4)
+        r["device"] = safe(p, 5)
+        r["path"] = safe(p, 6)
+        return r
+
+    if "NETWORK" in raw_upper or (len(p) > 8 and "." in safe(p, 8)):
+        r["source"] = "network"
+        r["proc_name"] = safe(p, 4)
+        r["pid"] = safe(p, 5)
+        r["remote_ip"] = safe(p, 8)
+        r["sent_mb"] = to_float(safe(p, 9))
+        r["recv_mb"] = to_float(safe(p, 10))
+        r["event_type"] = "NET_CONNECT"
+        return r
+
+    if "PROCESS" in raw_upper or "SUBPROCESS" in raw_upper:
+        r["source"] = "process"
+        r["proc_name"] = safe(p, 4)
+        r["pid"] = safe(p, 5)
+        r["mem_mb"] = to_float(safe(p, 6))
+        r["cpu_pct"] = to_float(safe(p, 7))
+        r["child_count"] = to_float(safe(p, 8))
+        r["path"] = safe(p, 9)
+        r["event_type"] = safe(p, 10)
+        return r
+
+    if "AUTH" in raw_upper or "LOGON" in raw_upper:
+        r["source"] = "auth"
+        r["event_id"] = safe(p, 4)
+        r["event_type"] = safe(p, 5)
+        r["username"] = safe(p, 6)
+        r["path"] = safe(p, 7)
+        return r
+
+    if "ACCESS" in raw_upper or "FILE_MODIFIED" in raw_upper:
+        r["source"] = "access"
+        r["event_type"] = safe(p, 4)
+        r["path"] = safe(p, 5).replace("file_path:","").strip()
+        return r
+
+    r["source"] = safe(p, 3).lower()
+    return r
 
 def load_csv(fp):
     rows = []
@@ -121,7 +178,8 @@ Return concise justification and response steps.
             model=AI_MODELS[0],
             messages=[{"author": "user", "content": prompt}]
         )
-        return getattr(getattr(r, "last", None), "message", {}).get("content", "").strip() or "AI unavailable. Escalate to human analyst."
+        content = getattr(getattr(r, "last", None), "message", {}).get("content", "")
+        return content.strip() if content else "AI unavailable. Escalate to human analyst."
     except Exception as e:
         logging.error(f"AI analyze failed: {e}")
         return "AI unavailable. Escalate to human analyst."
@@ -247,3 +305,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
