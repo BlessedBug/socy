@@ -8,7 +8,7 @@ import pandas as pd
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import google.generativeai as genai
+import google.genai as genai
 import tempfile
 
 WATCH_DIR = "/home/ubuntu/files"
@@ -18,6 +18,7 @@ PROC_DIR = "/home/ubuntu/proc"
 PROCESSED_DB = f"{STATE_DIR}/processed.json"
 PROCESSED_ARCHIVE = "/home/ubuntu/pfiles"
 ML_STATE_DIR = "/home/ubuntu/state/ml_analyzed"
+IP_EMAIL_MAP = f"{STATE_DIR}/ip_to_email.json"
 
 RF_CONFIDENCE_THRESHOLD = 85.0
 START_HOUR = 8
@@ -39,7 +40,10 @@ ADMIN_EMAIL = [
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 genai.configure(api_key=GOOGLE_API_KEY)
 
-AI_MODELS = ["gemini-1.5-flash", "gemini-1.5-pro"]
+AI_MODELS = [
+    "gemini-1.5-flash",
+    "gemini-1.5-pro"
+]
 
 os.makedirs(STATE_DIR, exist_ok=True)
 os.makedirs(PAYLOAD_DIR, exist_ok=True)
@@ -170,21 +174,26 @@ def load_csv(fp):
     return pd.DataFrame(rows)
 
 def ai_analyze(threats):
-    prompt = json.dumps(threats, indent=2)
-    for m in AI_MODELS:
-        try:
-            model = genai.GenerativeModel(m)
-            r = model.generate_content(prompt)
-            if r and r.text:
-                return r.text.strip()
-        except:
-            continue
-    return "USB activity confirmed malicious. Immediate containment required."
+    prompt = f"""
+You are a Tier-1 SOC analyst.
+USB activity is ALWAYS malicious.
+Assess severity, confidence, and response actions.
+{json.dumps(threats, indent=2)}
+Return concise justification and response steps.
+"""
+    try:
+        r = genai.chat.generate(
+            model="gemini-1.5-flash",
+            messages=[{"author":"user","content":prompt}]
+        )
+        return r.last.message.content.strip()
+    except:
+        return "AI unavailable. Escalate to human analyst."
 
-def send_email(payload):
+def send_email(payload, recipients):
     msg = MIMEMultipart()
     msg["From"] = SMTP_EMAIL
-    msg["To"] = ", ".join(ADMIN_EMAIL)
+    msg["To"] = ", ".join(recipients)
     msg["Subject"] = f"SOC ALERT [{payload['severity']}]"
     msg.attach(MIMEText(json.dumps(payload, indent=2), "plain"))
     with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as s:
@@ -196,8 +205,7 @@ def main():
         rf = joblib.load(SUPERVISED_MODEL)
         iso = joblib.load(UNSUPERVISED_MODEL)
     except:
-        rf = None
-        iso = None
+        return
 
     for fp in list_pending_files():
         fname = os.path.basename(fp)
@@ -212,12 +220,10 @@ def main():
         threats = []
         reasons = set()
         affected_ips = set()
+        used_ml = False
 
         for _, row in df.iterrows():
             row_reasons = []
-
-            if row["source"] == "usb":
-                row_reasons.append("USB_MALICIOUS")
 
             try:
                 h = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S").hour
@@ -226,6 +232,39 @@ def main():
             except:
                 pass
 
+            if row["source"] == "usb":
+                row_reasons.append("USB")
+                threats.append(row.to_dict())
+                payload = {
+                    "generated_at": datetime.utcnow().isoformat(),
+                    "source_file": fname,
+                    "severity": "CRITICAL",
+                    "reasons": ["USB"],
+                    "affected_ips": [row.get("remote_ip")] if row.get("remote_ip") else [],
+                    "analysis": "USB activity detected. Isolate immediately.",
+                    "response": "Contain host, disable USB, alert admin"
+                }
+                payload_name = f"payload_{fname.replace('.csv','')}.json"
+                for d in [PAYLOAD_DIR, PROC_DIR]:
+                    with open(os.path.join(d, payload_name), "w") as f:
+                        json.dump(payload, f, indent=2)
+                try:
+                    send_email(payload, ADMIN_EMAIL)
+                except:
+                    pass
+                continue
+
+            if row["source"] in ["process", "network"]:
+                used_ml = True
+                try:
+                    x = pd.DataFrame([row])[NUM_COLS]
+                    if rf.predict(x)[0] == 1 and max(rf.predict_proba(x)[0]) * 100 > RF_CONFIDENCE_THRESHOLD:
+                        row_reasons.append("RF_ANOMALY")
+                    if iso.predict(x)[0] == -1:
+                        row_reasons.append("ISO_ANOMALY")
+                except:
+                    pass
+
             if row["remote_ip"]:
                 affected_ips.add(row["remote_ip"])
 
@@ -233,23 +272,37 @@ def main():
                 reasons.update(row_reasons)
                 threats.append(row.to_dict())
 
-                if row["source"] == "usb":
-                    payload = {
-                        "generated_at": datetime.utcnow().isoformat(),
-                        "source_file": fname,
-                        "severity": "CRITICAL",
-                        "reasons": list(reasons),
-                        "analysis": "USB activity detected. Classified as malicious by policy.",
-                        "response": "Isolate host immediately and block USB access"
-                    }
-                    name = f"payload_{fname.replace('.csv','')}.json"
-                    for d in [PAYLOAD_DIR, PROC_DIR]:
-                        with open(os.path.join(d, name), "w") as f:
-                            json.dump(payload, f, indent=2)
-                    send_email(payload)
+        if not threats:
+            processed.add(fname)
+            atomic_save_state()
+            shutil.move(fp, os.path.join(PROCESSED_ARCHIVE, fname))
+            continue
 
-        if threats:
-            pd.DataFrame(threats).to_csv(os.path.join(PROC_DIR, f"threat_{fname}"), index=False)
+        severity = "CRITICAL" if "USB" in reasons else "HIGH"
+        analysis = ai_analyze(threats)
+        payload = {
+            "generated_at": datetime.utcnow().isoformat(),
+            "source_file": fname,
+            "severity": severity,
+            "reasons": list(reasons),
+            "affected_ips": list(affected_ips),
+            "analysis": analysis,
+            "response": "Contain host, verify USB legitimacy, review user activity"
+        }
+        payload_name = f"payload_{fname.replace('.csv','')}.json"
+        for d in [PAYLOAD_DIR, PROC_DIR]:
+            with open(os.path.join(d, payload_name), "w") as f:
+                json.dump(payload, f, indent=2)
+
+        try:
+            send_email(payload, ADMIN_EMAIL)
+        except:
+            pass
+
+        pd.DataFrame(threats).to_csv(os.path.join(PROC_DIR, f"threat_{fname}"), index=False)
+
+        if used_ml:
+            df[NUM_COLS].to_json(os.path.join(ML_STATE_DIR, f"ml_{fname}.json"))
 
         processed.add(fname)
         atomic_save_state()
@@ -257,6 +310,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
